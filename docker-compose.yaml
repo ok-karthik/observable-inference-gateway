@@ -1,0 +1,17 @@
+services:
+  gateway:
+    build:
+      context: gateway
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - MODEL_SERVICE_URL=http://model-service:8001
+    depends_on:
+      - model-service
+  model-service:
+    build:
+      context: model_service
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8001"
