@@ -22,11 +22,11 @@ The system is split into two lightweight microservices coordinated via Docker Co
 
 ```mermaid
 graph TD
-    Client[Client Request] -->|Port 8000| Gateway[Inference Gateway]
-    Gateway -->|Forward Health/Ready| ModelService[Model Service]
+    Client["Client Request"] -->|Port 8000| Gateway["Inference Gateway"]
+    Gateway -->|Forward Health/Ready| ModelService["Model Service"]
     Client -->|Direct Stream/Chat| ModelService
-    ModelService -->|Orchestrate| Ollama[Ollama Local LLM]
-    ModelService -->|Expose| Prometheus[/metrics Endpoint]
+    ModelService -->|Orchestrate| Ollama["Ollama Local LLM"]
+    ModelService -->|Expose| Prometheus["/metrics Endpoint"]
 ```
 
 ---
