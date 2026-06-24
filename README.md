@@ -29,15 +29,18 @@ The system is split into three lightweight microservices coordinated via Docker 
 ```mermaid
 graph TD
     Client["Client Request"] -->|Port 8000| Gateway["Inference Gateway"]
-    Gateway -->|Forward Chat| ModelService["Model Service"]
+    Gateway -->|Port 8001| ModelService["Model Service"]
     ModelService -->|Orchestrate| Ollama["Ollama Local LLM"]
-    ModelService -->|Push OTLP Port 4317| OTelCollector["OTel Collector (Inside LGTM)"]
-    OTelCollector -->|Store Traces| Tempo["Grafana Tempo"]
-    OTelCollector -->|Store Metrics| Mimir["Grafana Mimir"]
-    OTelCollector -->|Store Logs| Loki["Grafana Loki"]
-    Grafana["Grafana UI Port 3000"] -->|Query| Tempo
-    Grafana -->|Query| Mimir
-    Grafana -->|Query| Loki
+    
+    ModelService -->|OTLP Port 4317| OTelCollector["OTel Collector"]
+    
+    OTelCollector -->|Store Traces| Tempo["Tempo (Traces)"]
+    OTelCollector -->|Store Metrics| Mimir["Mimir (Metrics)"]
+    OTelCollector -->|Store Logs| Loki["Loki (Logs)"]
+    
+    Tempo -->|Query Traces| Grafana["Grafana UI - Port 3000"]
+    Mimir -->|Query Metrics| Grafana
+    Loki -->|Query Logs| Grafana
 ```
 
 ---
