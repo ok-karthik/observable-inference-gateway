@@ -1,8 +1,8 @@
-# 🚀 Observable Inference Gateway
+# 🧠 Observable Inference Gateway
 
-An ultra-modern, production-grade LLM inference proxy and gateway built on the cutting-edge **Python 3.14** runtime. It orchestrates traffic to local or remote LLMs (via Ollama) while providing unified, high-fidelity observability using OpenTelemetry, Prometheus (Mimir), Tempo, Loki, and Grafana.
+A containerized LLM inference proxy and gateway built on Python 3.14. It orchestrates traffic to local or remote LLMs (via Ollama) while providing unified observability using OpenTelemetry, Prometheus (Mimir), Tempo, Loki, and Grafana.
 
-Designed as a **portfolio showcase**, this project demonstrates modern Python development best practices, high-performance containerized microservices, and clean, standardized observability system design.
+Designed as a **portfolio showcase**, this project demonstrates Python development best practices, containerized microservices, and clean, standardized observability system design.
 
 ---
 
@@ -31,11 +31,11 @@ graph TD
     Client["Client Request"] -->|Port 8000| Gateway["Inference Gateway"]
     Gateway -->|Forward Chat| ModelService["Model Service"]
     ModelService -->|Orchestrate| Ollama["Ollama Local LLM"]
-    ModelService -->|Push OTLP (Port 4317)| OTelCollector["OTel Collector (Inside LGTM)"]
+    ModelService -->|Push OTLP Port 4317| OTelCollector["OTel Collector (Inside LGTM)"]
     OTelCollector -->|Store Traces| Tempo["Grafana Tempo"]
     OTelCollector -->|Store Metrics| Mimir["Grafana Mimir"]
     OTelCollector -->|Store Logs| Loki["Grafana Loki"]
-    Grafana["Grafana UI (Port 3000)"] -->|Query| Tempo
+    Grafana["Grafana UI Port 3000"] -->|Query| Tempo
     Grafana -->|Query| Mimir
     Grafana -->|Query| Loki
 ```
