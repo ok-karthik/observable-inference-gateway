@@ -1,14 +1,14 @@
 # 🚀 Observable Inference Gateway
 
-An ultra-modern, production-grade LLM inference proxy and gateway built on the cutting-edge **Python 3.14** runtime. It orchestrates traffic to local or remote LLMs (via Ollama) while providing native, high-fidelity observability using FastAPI, Prometheus, and structured logging.
+An ultra-modern, production-grade LLM inference proxy and gateway built on the cutting-edge **Python 3.14** runtime. It orchestrates traffic to local or remote LLMs (via Ollama) while providing unified, high-fidelity observability using OpenTelemetry, Prometheus (Mimir), Tempo, Loki, and Grafana.
 
-Designed as a **portfolio showcase**, this project demonstrates modern Python development best practices, high-performance containerized microservices, and clean system design.
+Designed as a **portfolio showcase**, this project demonstrates modern Python development best practices, high-performance containerized microservices, and clean, standardized observability system design.
 
 ---
 
 ## 🏗️ Architecture Overview
 
-The system is split into two lightweight microservices coordinated via Docker Compose:
+The system is split into three lightweight microservices coordinated via Docker Compose:
 
 1. **Inference Gateway (`gateway`):**
    * Acts as the external entry point (reverse proxy).
@@ -17,16 +17,27 @@ The system is split into two lightweight microservices coordinated via Docker Co
 2. **Model Service (`model_service`):**
    * Direct interface to the Ollama server.
    * Exposes streaming and non-streaming prediction routes (`/chat` and `/chat/stream`).
-   * Hosts a custom ASGI-mounted Prometheus `/metrics` registry.
-   * Uses custom FastAPI `APIRoute` telemetry instrumentation to automatically track request latency, volume, and exceptions.
+   * Automatically instrumented by the **OpenTelemetry CLI agent**, sending traces, metrics, and logs over OTLP.
+   * Emits custom domain metrics (like `inference_requests_total` labeled by model name and success/error status).
+3. **Observability Stack (`otel-lgtm`):**
+   * Preconfigured all-in-one container image (`grafana/otel-lgtm`) hosting the telemetry collector and storage backends:
+     * **Tempo** (Distributed tracing)
+     * **Prometheus / Mimir** (Metrics)
+     * **Loki** (Log aggregation)
+     * **Grafana** (Visualization dashboard)
 
 ```mermaid
 graph TD
     Client["Client Request"] -->|Port 8000| Gateway["Inference Gateway"]
-    Gateway -->|Forward Health/Ready| ModelService["Model Service"]
-    Client -->|Direct Stream/Chat| ModelService
+    Gateway -->|Forward Chat| ModelService["Model Service"]
     ModelService -->|Orchestrate| Ollama["Ollama Local LLM"]
-    ModelService -->|Expose| Prometheus["/metrics Endpoint"]
+    ModelService -->|Push OTLP (Port 4317)| OTelCollector["OTel Collector (Inside LGTM)"]
+    OTelCollector -->|Store Traces| Tempo["Grafana Tempo"]
+    OTelCollector -->|Store Metrics| Mimir["Grafana Mimir"]
+    OTelCollector -->|Store Logs| Loki["Grafana Loki"]
+    Grafana["Grafana UI (Port 3000)"] -->|Query| Tempo
+    Grafana -->|Query| Mimir
+    Grafana -->|Query| Loki
 ```
 
 ---
@@ -36,12 +47,9 @@ graph TD
 * **Python 3.14-slim (Bookworm):** Leverages the latest runtime improvements and features.
 * **FastAPI & Uvicorn:** Asynchronous HTTP framework for low-latency streaming endpoints.
 * **Astral `uv`:** Used for blazing-fast package installation, pinning, and multi-stage Docker build caching.
-* **Custom Telemetry Layer (`APIRoute`):** Instead of standard high-overhead middleware, latency and counters are hooked directly into FastAPI's route handler pipeline.
-* **Prometheus Metrics:** Native export of inference statistics:
-  * `inference_requests_total` (Labeled by endpoint, method, status code, and LLM model)
-  * `inference_request_latency_seconds` (Latency histogram)
-  * `inference_health_total` (Health check counts)
-* **Structured Logging:** Unified `structlog` & `rich` system displaying clean, colorized terminal output locally and flat JSON logs in production.
+* **OpenTelemetry Agent Instrumentation:** Runs zero-code auto-instrumentation using `opentelemetry-instrument` CLI, keeping application code free of complex tracing boilerplates.
+* **Structured Logging & OTLP Routing:** Unified logging using `structlog` routed through Python standard library `logging` when in production, allowing OTel to automatically capture, correlate, and send logs.
+* **Trace-Log Correlation:** Tracing IDs and Span IDs are automatically attached to application logs, allowing instant navigation from a trace waterfall directly to its generated logs in Grafana.
 
 ---
 
@@ -60,22 +68,35 @@ graph TD
    ollama pull gemma3:1b
    ```
 
-2. **Configure Environment:**
-   Create a `.env` file in the `model_service` directory if you need to point to a custom Ollama host:
-   ```env
-   HOST=http://host.docker.internal:11434
-   MODEL=gemma3:1b
-   ```
-
-3. **Spin up the stack:**
+2. **Spin up the stack:**
    ```bash
    docker compose up --build
    ```
 
-4. **Verify the services:**
+3. **Verify the services:**
    * Gateway: [http://localhost:8000/health](http://localhost:8000/health)
    * Model Service: [http://localhost:8001/health](http://localhost:8001/health)
-   * Prometheus Metrics: [http://localhost:8001/metrics](http://localhost:8001/metrics)
+   * Grafana Dashboards: [http://localhost:3000](http://localhost:3000) (default credentials: `admin` / `admin`)
+
+---
+
+## 📊 Observability in Action (Grafana)
+
+Open `http://localhost:3000` in your web browser, navigate to the **Explore** tab, and select one of the following datasources:
+
+### 1. Traces (Tempo)
+Select **Tempo** as the datasource, switch the Query Type to **Search**, choose `model-service` as the service name, and run the query. Click on any trace ID to view a detailed waterfall timeline of request latencies.
+
+### 2. Logs (Loki)
+Select **Loki** as the datasource, and query `{service_name="model-service"}`. You will see structured application logs seamlessly decorated with `trace_id` and `span_id` context.
+
+### 3. Metrics (Prometheus)
+Select **Prometheus** as the datasource. 
+* To see request metrics auto-generated by the FastAPI instrumentation, query `http_server_duration_milliseconds_count`.
+* To see the custom model usage metric, query:
+  ```promql
+  sum(rate(inference_requests_total[5m])) by (model, status)
+  ```
 
 ---
 
@@ -95,16 +116,3 @@ curl -N -X POST http://localhost:8001/chat/stream \
   -d '{"model": "gemma3:1b", "content": "Count from 1 to 5."}'
 ```
 
----
-
-## 📊 Observability
-
-Custom telemetry is handled inside `model_service/metrics.py`. It wraps the route handler (`APIRoute.get_route_handler`) allowing it to access `request.state` and automatically calculate precise execution time even in the case of failures:
-
-```python
-class TelemetryRoute(APIRoute):
-    def get_route_handler(self) -> Callable:
-        run_endpoint = super().get_route_handler()
-        async def route_runner_with_metrics(request: Request) -> Response:
-            # ... tracks latency, catches exceptions, sends to Prometheus registry
-```

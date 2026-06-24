@@ -15,3 +15,15 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8001:8001"
+    environment:
+      - HOST=http://host.docker.internal:11434
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-lgtm:4317
+      - OTEL_SERVICE_NAME=model-service
+      - OTEL_LOGS_EXPORTER=otlp #Enable OTLP log exporting
+      - OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED=true #Enable logs auto-instrumentation
+  otel-lgtm:
+    image: grafana/otel-lgtm:0.8.1
+    ports:
+      - "3000:3000" # Grafana Web UI
+      - "4317:4317" # OTLP gRPC (receives traces/metrics from your app)
+      - "4318:4318" # OTLP HTTP (alternative)

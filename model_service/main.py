@@ -5,16 +5,14 @@ import uuid
 from contextlib import asynccontextmanager
 
 import httpx
-import structlog
+import structlog, logging
 from dotenv import load_dotenv
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from prometheus_client import make_asgi_app
 from pydantic import BaseModel
 from rich.console import Console
 from rich.traceback import install
-
-from metrics import TelemetryRoute
+from opentelemetry import metrics
 
 load_dotenv()
 
@@ -30,29 +28,17 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan, title="Inference Model Service", version="1.0")
-predict_router = APIRouter(route_class=TelemetryRoute)
-
-metrics_app = make_asgi_app()
-app.mount("/metrics", metrics_app)
 
 # Logging
-# Determine if we are running in a local terminal (interactive console)
-is_local = sys.stderr.isatty()
 install(show_locals=True)
-processors = [
-    structlog.processors.TimeStamper(fmt="iso", utc=False),
-]
-if is_local:
-    # Local Development: Pretty colors, console layout, and rich tracebacks
-    from structlog.dev import ConsoleRenderer, plain_traceback
-
-    processors.append(
-        ConsoleRenderer(exception_formatter=plain_traceback)  # or rich traceback
-    )
-else:
-    # Production (Docker/Kubernetes): Flat, searchable JSON logs
-    processors.append(structlog.processors.JSONRenderer())
-structlog.configure(processors=processors)
+logging.basicConfig(level=logging.INFO)
+structlog.configure(
+    processors=[
+        structlog.processors.TimeStamper(fmt="iso", utc=False),
+        structlog.stdlib.render_to_log_kwargs,
+    ],
+    logger_factory=structlog.stdlib.LoggerFactory(),
+)
 logger = structlog.get_logger()
 
 
@@ -60,13 +46,17 @@ class ChatRequest(BaseModel):
     model: str = MODEL
     content: str = "How are you?"
 
+meter = metrics.get_meter("model-service")
+inference_counter = meter.create_counter("inference_requests_total")
 
-@predict_router.post("/chat/stream", response_class=StreamingResponse)
+
+@app.post("/chat/stream", response_class=StreamingResponse)
 async def chat_stream(chatreq: ChatRequest, request: Request) -> StreamingResponse:
     async def generate_stream():
         """
         A generator function to return a streaming response
         """
+        request_id = str(uuid.uuid4())
         try:
             async with app.state.client.stream(
                 "POST",
@@ -80,9 +70,11 @@ async def chat_stream(chatreq: ChatRequest, request: Request) -> StreamingRespon
                 response.raise_for_status()
                 request.state.model = chatreq.model
 
+                inference_counter.add(1, {"model": chatreq.model, "status": "success"})
+
                 async for line in response.aiter_lines():
                     if line:
-                        yield json.dumps(map_chunk(json.loads(line))) + "\n"
+                        yield json.dumps(map_chunk(json.loads(line), request_id)) + "\n"
                 logger.info(f"Model: {chatreq.model}, Tokens: {response}")
         except Exception as e:
             logger.error(f"Stream error: {e}")
@@ -92,8 +84,9 @@ async def chat_stream(chatreq: ChatRequest, request: Request) -> StreamingRespon
     return StreamingResponse(generate_stream(), media_type="application/x-ndjson")
 
 
-@predict_router.post("/chat")
+@app.post("/chat")
 async def chat_non_stream(chatreq: ChatRequest, request: Request):
+    request_id = str(uuid.uuid4())
     try:
         response = await app.state.client.post(
             "/api/chat",
@@ -107,7 +100,9 @@ async def chat_non_stream(chatreq: ChatRequest, request: Request):
         response.raise_for_status()
         request.state.model = chatreq.model
 
-        return map_chunk(response.json())
+        inference_counter.add(1, {"model": chatreq.model, "status": "success"})
+
+        return map_chunk(response.json(), request_id)
     except httpx.HTTPError as exc:
         logger.error(f"HTTP connection error: {exc}")
         Console().print_exception(show_locals=True)
@@ -118,12 +113,12 @@ async def chat_non_stream(chatreq: ChatRequest, request: Request):
         raise HTTPException(status_code=status_code, detail=str(exc))
 
 
-def map_chunk(chunk: dict) -> dict:
+def map_chunk(chunk: dict, request_id: str) -> dict:
     content = chunk.get("message", {}).get("content", "")
 
     # 1. If it's a streaming token chunk (not done yet), keep it minimal
     if not chunk.get("done", False):
-        return {"content": content}
+        return {"content": content, "request_id": request_id}
 
     # 2. If it's the final chunk (or non-streaming response), include usage and metrics
     prompt_tokens = chunk.get("prompt_eval_count", 0)
@@ -132,6 +127,7 @@ def map_chunk(chunk: dict) -> dict:
 
     return {
         "content": chunk.get("message", {}).get("content", ""),
+        "request_id": request_id,
         "usage": {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
@@ -144,47 +140,6 @@ def map_chunk(chunk: dict) -> dict:
             else 0.0,
         },
     }
-
-
-app.include_router(predict_router)
-
-# @app.middleware("http")
-# async def add_process_time_header(request: Request, call_next):
-#    response = await call_next(request)
-#    return response
-
-
-# @predict_router.post("/v1/predict", response_model=PredictResponse)
-# async def predict(req: PredictRequest, request: Request):
-#    start_time = time.perf_counter()
-#    request_id = str(uuid.uuid4())
-#    logger.info("predict_request", request_id=request_id, request_payload=req)
-#
-#    # Mock model processing time
-#    await sleep(random.uniform(0, 1))
-#    # await asyncio.sleep(random_sleep)
-#
-#    # request.state.model = req.model
-#    latency_ms = float((time.perf_counter() - start_time) * 1000)
-#
-#    request.state.model = req.model
-#
-#    tokens_used = len(req.text.split())
-#    result = f"[MOCK] Processed {tokens_used} tokens with model {req.model}"
-#    logger.info(
-#        "predict_response",
-#        request_id=request_id,
-#        latency_ms=latency_ms,
-#        result=result,
-#        tokens_used=tokens_used,
-#    )
-#    return {
-#        "request_id": request_id,
-#        "latency_ms": latency_ms,
-#        "result": result,
-#        "tokens_used": tokens_used,
-#    }
-
 
 @app.get("/health")
 async def health_check() -> dict:
